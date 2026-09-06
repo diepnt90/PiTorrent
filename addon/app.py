@@ -1,14 +1,16 @@
-import os,re,urllib.parse
+import os,re,urllib.parse,struct
 from flask import Flask,jsonify,request
 import requests
 
 app=Flask(__name__)
 ROOT='/downloads/complete'
 VIDEO_EXT={'.mp4','.mkv','.avi','.mov','.m4v','.webm','.ts','.m2ts','.wmv','.flv'}
+HASH_CHUNK=64*1024
+MASK64=0xFFFFFFFFFFFFFFFF
 
 MANIFEST={
  'id':'community.pitorrent.lan',
- 'version':'0.1.1',
+ 'version':'0.1.2',
  'name':'PiTorrent LAN',
  'description':'Streams completed PiTorrent files from the local Raspberry Pi.',
  'resources':[{'name':'stream','types':['movie','series'],'idPrefixes':['tt']}],
@@ -33,6 +35,23 @@ def video_files():
     except OSError: continue
     out.append((p,fn,size))
  return out
+
+def opensubtitles_hash(path,size=None):
+ try:
+  if size is None: size=os.path.getsize(path)
+  if size < HASH_CHUNK*2: return None
+  h=size & MASK64
+  with open(path,'rb') as f:
+   first=f.read(HASH_CHUNK)
+   f.seek(size-HASH_CHUNK)
+   last=f.read(HASH_CHUNK)
+  for block in (first,last):
+   usable=len(block)-(len(block)%8)
+   for i in range(0,usable,8):
+    h=(h+struct.unpack_from('<Q',block,i)[0]) & MASK64
+  return f'{h:016x}'
+ except (OSError,ValueError,struct.error):
+  return None
 
 def fetch_meta(kind,meta_id):
  try:
@@ -113,15 +132,19 @@ def stream(kind,content_id):
  host=request.headers.get('X-Forwarded-Host') or request.headers.get('Host')
  proto=request.headers.get('X-Forwarded-Proto') or 'http'
  url=f'{proto}://{host}/media/{urllib.parse.quote(rel)}'
+ hints={
+  'filename':fn,
+  'videoSize':size,
+  'notWebReady':True
+ }
+ vhash=opensubtitles_hash(p,size)
+ if vhash:
+  hints['videoHash']=vhash
  return jsonify({'streams':[{
   'name':'PiTorrent LAN',
   'description':f'Local • {fn}',
   'url':url,
-  'behaviorHints':{
-   'filename':fn,
-   'videoSize':size,
-   'notWebReady':True
-  }
+  'behaviorHints':hints
  }]})
 
 @app.get('/health')
