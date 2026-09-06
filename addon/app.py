@@ -1,5 +1,5 @@
 import os,re,urllib.parse,struct,json,uuid
-from flask import Flask,jsonify,request,send_from_directory
+from flask import Flask,jsonify,request,send_from_directory,Response
 from werkzeug.utils import secure_filename
 import requests
 
@@ -15,7 +15,7 @@ MASK64=0xFFFFFFFFFFFFFFFF
 os.makedirs(SUB_FILES,exist_ok=True)
 
 MANIFEST={
- 'id':'community.pitorrent.lan','version':'0.2.0','name':'PiTorrent LAN',
+ 'id':'community.pitorrent.lan','version':'0.2.1','name':'PiTorrent LAN',
  'description':'Streams completed PiTorrent files and their subtitles from the local Raspberry Pi.',
  'resources':[
   {'name':'stream','types':['movie','series'],'idPrefixes':['tt']},
@@ -126,6 +126,16 @@ def external_base():
  proto=request.headers.get('X-Forwarded-Proto') or 'http'
  return f'{proto}://{host}'
 
+def subtitle_to_vtt(text):
+ text=(text or '').replace('\r\n','\n').replace('\r','\n').lstrip('\ufeff')
+ if text.lstrip().startswith('WEBVTT'): return text
+ lines=text.split('\n'); out=['WEBVTT','']
+ for line in lines:
+  if '-->' in line:
+   line=re.sub(r'(\d{2}:\d{2}:\d{2}),(\d{3})',r'\1.\2',line)
+  out.append(line)
+ return '\n'.join(out)
+
 @app.after_request
 def cors(resp):
  resp.headers['Access-Control-Allow-Origin']='*'; resp.headers['Access-Control-Allow-Headers']='*'; resp.headers['Access-Control-Allow-Methods']='GET,HEAD,OPTIONS,POST,DELETE'; resp.headers['Cache-Control']='no-store'; return resp
@@ -197,6 +207,28 @@ def subtitle_delete():
 
 @app.get('/subtitle-files/<path:name>')
 def subtitle_file(name): return send_from_directory(SUB_FILES,name,as_attachment=False)
+
+@app.get('/player-subtitle')
+def player_subtitle():
+ rel=clean_rel(request.args.get('file')); sid=request.args.get('id') or ''
+ if rel is None: return jsonify({'error':'invalid file'}),400
+ entry=next((e for e in load_map().get(rel,[]) if e.get('id')==sid),None)
+ if not entry: return jsonify({'error':'subtitle not found'}),404
+ try:
+  if entry.get('file'):
+   path=os.path.join(SUB_FILES,entry['file'])
+   ext=os.path.splitext(entry.get('name') or entry['file'])[1].lower()
+   with open(path,'rb') as f: raw=f.read()
+  else:
+   url=entry.get('url') or ''
+   ext=os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
+   r=requests.get(url,timeout=12,headers={'User-Agent':'Mozilla/5.0'}); r.raise_for_status(); raw=r.content
+  if ext in ('.ass','.ssa'): return jsonify({'error':'ASS/SSA is not supported by the browser player'}),415
+  try: text=raw.decode('utf-8-sig')
+  except UnicodeDecodeError: text=raw.decode('latin-1','replace')
+  return Response(subtitle_to_vtt(text),mimetype='text/vtt; charset=utf-8')
+ except Exception as e:
+  return jsonify({'error':f'could not load subtitle: {e}'}),502
 
 @app.get('/health')
 def health(): return jsonify({'ok':True,'files':len(video_files()),'subtitleMappings':len(load_map())})
