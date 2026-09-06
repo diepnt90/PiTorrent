@@ -10,7 +10,7 @@ MASK64=0xFFFFFFFFFFFFFFFF
 
 MANIFEST={
  'id':'community.pitorrent.lan',
- 'version':'0.1.2',
+ 'version':'0.1.3',
  'name':'PiTorrent LAN',
  'description':'Streams completed PiTorrent files from the local Raspberry Pi.',
  'resources':[{'name':'stream','types':['movie','series'],'idPrefixes':['tt']}],
@@ -23,6 +23,11 @@ def norm(s):
  s=(s or '').lower()
  s=re.sub(r'[^a-z0-9]+',' ',s)
  return ' '.join(s.split())
+
+def safe_name(s):
+ s=(s or '').strip()
+ s=re.sub(r'[^A-Za-z0-9]+','.',s)
+ return s.strip('.')
 
 def video_files():
  out=[]
@@ -63,10 +68,7 @@ def fetch_meta(kind,meta_id):
   pass
  return {}
 
-def choose_file(kind,content_id):
- files=video_files()
- if not files: return None
-
+def content_info(kind,content_id):
  season=None; episode=None
  meta_id=content_id
  if kind=='series' and ':' in content_id:
@@ -75,8 +77,6 @@ def choose_file(kind,content_id):
   if len(parts)>=3:
    try: season=int(parts[1]); episode=int(parts[2])
    except (ValueError,TypeError): pass
-
- # Cinemeta meta endpoint expects the SERIES id, not the episode video id.
  meta=fetch_meta(kind,meta_id)
  title=meta.get('name') or ''
  ep_title=''
@@ -85,7 +85,12 @@ def choose_file(kind,content_id):
    if str(v.get('id'))==content_id or (v.get('season')==season and v.get('episode')==episode):
     ep_title=v.get('title') or v.get('name') or ''
     break
+ return meta,title,ep_title,season,episode
 
+def choose_file(kind,content_id):
+ files=video_files()
+ if not files: return None
+ meta,title,ep_title,season,episode=content_info(kind,content_id)
  nt,ne=norm(title),norm(ep_title)
  best=None; score=-1
  for p,fn,size in files:
@@ -93,23 +98,30 @@ def choose_file(kind,content_id):
   raw=' '+p.lower()+' '
   s=0
   if nt and nt in hay: s+=30
-  # Episode title is the strongest match. This also handles torrents using
-  # absolute episode numbering (e.g. Ep41) while Nuvio requests S7E6.
   if ne and ne in hay: s+=100
   if season is not None and episode is not None:
    patterns=[f's{season:02d}e{episode:02d}',f's{season}e{episode}']
    if any(x in raw for x in patterns): s+=70
-   # Only use EpNN as a weak fallback because many collection torrents use
-   # absolute episode numbering rather than season-relative numbering.
    weak=[f' ep{episode:02d} ',f' ep{episode} ']
    if any(x in raw for x in weak): s+=10
   if s>score:
    best=(p,fn,size); score=s
-
- # For series, require an episode-specific match; matching only the show title
- # must never return the wrong local episode.
  threshold=60 if kind=='series' else 25
  return best if score>=threshold else None
+
+def subtitle_filename(kind,content_id,real_filename):
+ ext=os.path.splitext(real_filename)[1].lower() or '.mp4'
+ meta,title,ep_title,season,episode=content_info(kind,content_id)
+ if kind=='series' and season is not None and episode is not None:
+  parts=[safe_name(title),f'S{season:02d}E{episode:02d}',safe_name(ep_title)]
+  name='.'.join(x for x in parts if x)
+  return (name or os.path.splitext(real_filename)[0])+ext
+ if kind=='movie':
+  year=meta.get('year') or meta.get('releaseInfo') or ''
+  parts=[safe_name(title),safe_name(str(year))]
+  name='.'.join(x for x in parts if x)
+  return (name or os.path.splitext(real_filename)[0])+ext
+ return real_filename
 
 @app.after_request
 def cors(resp):
@@ -133,7 +145,7 @@ def stream(kind,content_id):
  proto=request.headers.get('X-Forwarded-Proto') or 'http'
  url=f'{proto}://{host}/media/{urllib.parse.quote(rel)}'
  hints={
-  'filename':fn,
+  'filename':subtitle_filename(kind,content_id,fn),
   'videoSize':size,
   'notWebReady':True
  }
