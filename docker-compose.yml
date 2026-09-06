@@ -27,6 +27,7 @@ services:
       - TZ=Asia/Bangkok
     volumes:
       - /mnt/pitorrent/downloads/complete:/downloads/complete:ro
+      - /mnt/pitorrent/data/subtitles:/data/subtitles
     expose:
       - "7000"
 
