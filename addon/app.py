@@ -8,17 +8,17 @@ VIDEO_EXT={'.mp4','.mkv','.avi','.mov','.m4v','.webm','.ts','.m2ts','.wmv','.flv
 
 MANIFEST={
  'id':'community.pitorrent.lan',
- 'version':'0.1.0',
+ 'version':'0.1.1',
  'name':'PiTorrent LAN',
  'description':'Streams completed PiTorrent files from the local Raspberry Pi.',
- 'resources':['stream'],
+ 'resources':[{'name':'stream','types':['movie','series'],'idPrefixes':['tt']}],
  'types':['movie','series'],
- 'idPrefixes':['tt'],
+ 'catalogs':[],
  'behaviorHints':{'configurable':False}
 }
 
 def norm(s):
- s=s.lower()
+ s=(s or '').lower()
  s=re.sub(r'[^a-z0-9]+',' ',s)
  return ' '.join(s.split())
 
@@ -34,9 +34,9 @@ def video_files():
     out.append((p,fn,size))
  return out
 
-def fetch_meta(kind,content_id):
+def fetch_meta(kind,meta_id):
  try:
-  url=f'https://v3-cinemeta.strem.io/meta/{kind}/{urllib.parse.quote(content_id,safe=":")}.json'
+  url=f'https://v3-cinemeta.strem.io/meta/{kind}/{urllib.parse.quote(meta_id,safe="")}.json'
   r=requests.get(url,timeout=8)
   if r.ok:
    return (r.json() or {}).get('meta') or {}
@@ -45,40 +45,59 @@ def fetch_meta(kind,content_id):
  return {}
 
 def choose_file(kind,content_id):
- meta=fetch_meta(kind,content_id)
  files=video_files()
  if not files: return None
- title=meta.get('name') or ''
- ep_title=''
+
  season=None; episode=None
+ meta_id=content_id
  if kind=='series' and ':' in content_id:
   parts=content_id.split(':')
+  meta_id=parts[0]
   if len(parts)>=3:
-   try: season=int(parts[-2]);episode=int(parts[-1])
-   except: pass
+   try: season=int(parts[1]); episode=int(parts[2])
+   except (ValueError,TypeError): pass
+
+ # Cinemeta meta endpoint expects the SERIES id, not the episode video id.
+ meta=fetch_meta(kind,meta_id)
+ title=meta.get('name') or ''
+ ep_title=''
+ if kind=='series' and season is not None and episode is not None:
   for v in meta.get('videos') or []:
-   if str(v.get('id'))==content_id or (season is not None and v.get('season')==season and v.get('episode')==episode):
+   if str(v.get('id'))==content_id or (v.get('season')==season and v.get('episode')==episode):
     ep_title=v.get('title') or v.get('name') or ''
     break
+
  nt,ne=norm(title),norm(ep_title)
- best=None;score=-1
+ best=None; score=-1
  for p,fn,size in files:
   hay=norm(p)
+  raw=' '+p.lower()+' '
   s=0
   if nt and nt in hay: s+=30
-  if ne and ne in hay: s+=60
+  # Episode title is the strongest match. This also handles torrents using
+  # absolute episode numbering (e.g. Ep41) while Nuvio requests S7E6.
+  if ne and ne in hay: s+=100
   if season is not None and episode is not None:
-   patterns=[f's{season:02d}e{episode:02d}',f's{season}e{episode}',f' {episode:02d} ',f' ep{episode:02d} ',f' ep{episode} ']
-   raw=' '+p.lower()+' '
-   if any(x in raw for x in patterns): s+=25
-  if s>score: best=(p,fn,size);score=s
- return best if score>0 else None
+   patterns=[f's{season:02d}e{episode:02d}',f's{season}e{episode}']
+   if any(x in raw for x in patterns): s+=70
+   # Only use EpNN as a weak fallback because many collection torrents use
+   # absolute episode numbering rather than season-relative numbering.
+   weak=[f' ep{episode:02d} ',f' ep{episode} ']
+   if any(x in raw for x in weak): s+=10
+  if s>score:
+   best=(p,fn,size); score=s
+
+ # For series, require an episode-specific match; matching only the show title
+ # must never return the wrong local episode.
+ threshold=60 if kind=='series' else 25
+ return best if score>=threshold else None
 
 @app.after_request
 def cors(resp):
  resp.headers['Access-Control-Allow-Origin']='*'
  resp.headers['Access-Control-Allow-Headers']='*'
  resp.headers['Access-Control-Allow-Methods']='GET,HEAD,OPTIONS'
+ resp.headers['Cache-Control']='no-store'
  return resp
 
 @app.get('/manifest.json')
@@ -96,12 +115,12 @@ def stream(kind,content_id):
  url=f'{proto}://{host}/media/{urllib.parse.quote(rel)}'
  return jsonify({'streams':[{
   'name':'PiTorrent LAN',
-  'title':f'Local • {fn}',
+  'description':f'Local • {fn}',
   'url':url,
   'behaviorHints':{
    'filename':fn,
    'videoSize':size,
-   'notWebReady': True
+   'notWebReady':True
   }
  }]})
 
