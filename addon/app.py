@@ -1,33 +1,52 @@
-import os,re,urllib.parse,struct
-from flask import Flask,jsonify,request
+import os,re,urllib.parse,struct,json,uuid
+from flask import Flask,jsonify,request,send_from_directory
+from werkzeug.utils import secure_filename
 import requests
 
 app=Flask(__name__)
 ROOT='/downloads/complete'
+SUB_ROOT='/data/subtitles'
+SUB_FILES=os.path.join(SUB_ROOT,'files')
+SUB_MAP=os.path.join(SUB_ROOT,'mappings.json')
 VIDEO_EXT={'.mp4','.mkv','.avi','.mov','.m4v','.webm','.ts','.m2ts','.wmv','.flv'}
+SUB_EXT={'.srt','.vtt','.ass','.ssa'}
 HASH_CHUNK=64*1024
 MASK64=0xFFFFFFFFFFFFFFFF
+os.makedirs(SUB_FILES,exist_ok=True)
 
 MANIFEST={
- 'id':'community.pitorrent.lan',
- 'version':'0.1.3',
- 'name':'PiTorrent LAN',
- 'description':'Streams completed PiTorrent files from the local Raspberry Pi.',
- 'resources':[{'name':'stream','types':['movie','series'],'idPrefixes':['tt']}],
- 'types':['movie','series'],
- 'catalogs':[],
- 'behaviorHints':{'configurable':False}
+ 'id':'community.pitorrent.lan','version':'0.2.0','name':'PiTorrent LAN',
+ 'description':'Streams completed PiTorrent files and their subtitles from the local Raspberry Pi.',
+ 'resources':[
+  {'name':'stream','types':['movie','series'],'idPrefixes':['tt']},
+  {'name':'subtitles','types':['movie','series'],'idPrefixes':['tt']}
+ ],
+ 'types':['movie','series'],'catalogs':[],'behaviorHints':{'configurable':False}
 }
 
 def norm(s):
- s=(s or '').lower()
- s=re.sub(r'[^a-z0-9]+',' ',s)
- return ' '.join(s.split())
+ s=(s or '').lower(); s=re.sub(r'[^a-z0-9]+',' ',s); return ' '.join(s.split())
 
 def safe_name(s):
- s=(s or '').strip()
- s=re.sub(r'[^A-Za-z0-9]+','.',s)
- return s.strip('.')
+ s=(s or '').strip(); s=re.sub(r'[^A-Za-z0-9]+','.',s); return s.strip('.')
+
+def clean_rel(rel):
+ rel=urllib.parse.unquote(rel or '').replace('\\','/').lstrip('/')
+ p=os.path.realpath(os.path.join(ROOT,rel))
+ root=os.path.realpath(ROOT)+os.sep
+ if not p.startswith(root): return None
+ return os.path.relpath(p,ROOT).replace(os.sep,'/')
+
+def load_map():
+ try:
+  with open(SUB_MAP,'r',encoding='utf-8') as f: return json.load(f)
+ except Exception: return {}
+
+def save_map(data):
+ os.makedirs(SUB_ROOT,exist_ok=True)
+ tmp=SUB_MAP+'.tmp'
+ with open(tmp,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2)
+ os.replace(tmp,SUB_MAP)
 
 def video_files():
  out=[]
@@ -47,89 +66,69 @@ def opensubtitles_hash(path,size=None):
   if size < HASH_CHUNK*2: return None
   h=size & MASK64
   with open(path,'rb') as f:
-   first=f.read(HASH_CHUNK)
-   f.seek(size-HASH_CHUNK)
-   last=f.read(HASH_CHUNK)
+   first=f.read(HASH_CHUNK); f.seek(size-HASH_CHUNK); last=f.read(HASH_CHUNK)
   for block in (first,last):
    usable=len(block)-(len(block)%8)
-   for i in range(0,usable,8):
-    h=(h+struct.unpack_from('<Q',block,i)[0]) & MASK64
+   for i in range(0,usable,8): h=(h+struct.unpack_from('<Q',block,i)[0]) & MASK64
   return f'{h:016x}'
- except (OSError,ValueError,struct.error):
-  return None
+ except (OSError,ValueError,struct.error): return None
 
 def fetch_meta(kind,meta_id):
  try:
   url=f'https://v3-cinemeta.strem.io/meta/{kind}/{urllib.parse.quote(meta_id,safe="")}.json'
   r=requests.get(url,timeout=8)
-  if r.ok:
-   return (r.json() or {}).get('meta') or {}
- except Exception:
-  pass
+  if r.ok: return (r.json() or {}).get('meta') or {}
+ except Exception: pass
  return {}
 
 def content_info(kind,content_id):
- season=None; episode=None
- meta_id=content_id
+ season=None; episode=None; meta_id=content_id
  if kind=='series' and ':' in content_id:
-  parts=content_id.split(':')
-  meta_id=parts[0]
+  parts=content_id.split(':'); meta_id=parts[0]
   if len(parts)>=3:
    try: season=int(parts[1]); episode=int(parts[2])
    except (ValueError,TypeError): pass
- meta=fetch_meta(kind,meta_id)
- title=meta.get('name') or ''
- ep_title=''
+ meta=fetch_meta(kind,meta_id); title=meta.get('name') or ''; ep_title=''
  if kind=='series' and season is not None and episode is not None:
   for v in meta.get('videos') or []:
    if str(v.get('id'))==content_id or (v.get('season')==season and v.get('episode')==episode):
-    ep_title=v.get('title') or v.get('name') or ''
-    break
+    ep_title=v.get('title') or v.get('name') or ''; break
  return meta,title,ep_title,season,episode
 
 def choose_file(kind,content_id):
  files=video_files()
  if not files: return None
- meta,title,ep_title,season,episode=content_info(kind,content_id)
- nt,ne=norm(title),norm(ep_title)
+ meta,title,ep_title,season,episode=content_info(kind,content_id); nt,ne=norm(title),norm(ep_title)
  best=None; score=-1
  for p,fn,size in files:
-  hay=norm(p)
-  raw=' '+p.lower()+' '
-  s=0
+  hay=norm(p); raw=' '+p.lower()+' '; s=0
   if nt and nt in hay: s+=30
   if ne and ne in hay: s+=100
   if season is not None and episode is not None:
-   patterns=[f's{season:02d}e{episode:02d}',f's{season}e{episode}']
-   if any(x in raw for x in patterns): s+=70
-   weak=[f' ep{episode:02d} ',f' ep{episode} ']
-   if any(x in raw for x in weak): s+=10
-  if s>score:
-   best=(p,fn,size); score=s
- threshold=60 if kind=='series' else 25
- return best if score>=threshold else None
+   if any(x in raw for x in [f's{season:02d}e{episode:02d}',f's{season}e{episode}']): s+=70
+   if any(x in raw for x in [f' ep{episode:02d} ',f' ep{episode} ']): s+=10
+  if s>score: best=(p,fn,size); score=s
+ return best if score >= (60 if kind=='series' else 25) else None
 
 def subtitle_filename(kind,content_id,real_filename):
- ext=os.path.splitext(real_filename)[1].lower() or '.mp4'
- meta,title,ep_title,season,episode=content_info(kind,content_id)
+ ext=os.path.splitext(real_filename)[1].lower() or '.mp4'; meta,title,ep_title,season,episode=content_info(kind,content_id)
  if kind=='series' and season is not None and episode is not None:
-  parts=[safe_name(title),f'S{season:02d}E{episode:02d}',safe_name(ep_title)]
-  name='.'.join(x for x in parts if x)
+  name='.'.join(x for x in [safe_name(title),f'S{season:02d}E{episode:02d}',safe_name(ep_title)] if x)
   return (name or os.path.splitext(real_filename)[0])+ext
  if kind=='movie':
   year=meta.get('year') or meta.get('releaseInfo') or ''
-  parts=[safe_name(title),safe_name(str(year))]
-  name='.'.join(x for x in parts if x)
+  name='.'.join(x for x in [safe_name(title),safe_name(str(year))] if x)
   return (name or os.path.splitext(real_filename)[0])+ext
  return real_filename
 
+def external_base():
+ host=request.headers.get('X-Forwarded-Host') or request.headers.get('Host')
+ proto=request.headers.get('X-Forwarded-Proto') or 'http'
+ return f'{proto}://{host}'
+
 @app.after_request
 def cors(resp):
- resp.headers['Access-Control-Allow-Origin']='*'
- resp.headers['Access-Control-Allow-Headers']='*'
- resp.headers['Access-Control-Allow-Methods']='GET,HEAD,OPTIONS'
- resp.headers['Cache-Control']='no-store'
- return resp
+ resp.headers['Access-Control-Allow-Origin']='*'; resp.headers['Access-Control-Allow-Headers']='*'; resp.headers['Access-Control-Allow-Methods']='GET,HEAD,OPTIONS,POST,DELETE'; resp.headers['Cache-Control']='no-store'; return resp
 
 @app.get('/manifest.json')
 def manifest(): return jsonify(MANIFEST)
@@ -139,27 +138,67 @@ def stream(kind,content_id):
  if kind not in ('movie','series'): return jsonify({'streams':[]})
  found=choose_file(kind,content_id)
  if not found: return jsonify({'streams':[]})
- p,fn,size=found
- rel=os.path.relpath(p,ROOT).replace(os.sep,'/')
- host=request.headers.get('X-Forwarded-Host') or request.headers.get('Host')
- proto=request.headers.get('X-Forwarded-Proto') or 'http'
- url=f'{proto}://{host}/media/{urllib.parse.quote(rel)}'
- hints={
-  'filename':subtitle_filename(kind,content_id,fn),
-  'videoSize':size,
-  'notWebReady':True
- }
+ p,fn,size=found; rel=os.path.relpath(p,ROOT).replace(os.sep,'/')
+ hints={'filename':subtitle_filename(kind,content_id,fn),'videoSize':size,'notWebReady':True}
  vhash=opensubtitles_hash(p,size)
- if vhash:
-  hints['videoHash']=vhash
- return jsonify({'streams':[{
-  'name':'PiTorrent LAN',
-  'description':f'Local • {fn}',
-  'url':url,
-  'behaviorHints':hints
- }]})
+ if vhash: hints['videoHash']=vhash
+ return jsonify({'streams':[{'name':'PiTorrent LAN','description':f'Local • {fn}','url':f'{external_base()}/media/{urllib.parse.quote(rel)}','behaviorHints':hints}]})
+
+@app.get('/subtitles/<kind>/<path:content_id>.json')
+def subtitles(kind,content_id):
+ if kind not in ('movie','series'): return jsonify({'subtitles':[]})
+ found=choose_file(kind,content_id)
+ if not found: return jsonify({'subtitles':[]})
+ p,fn,size=found; rel=os.path.relpath(p,ROOT).replace(os.sep,'/')
+ entries=load_map().get(rel,[]); out=[]
+ for i,e in enumerate(entries):
+  url=e.get('url')
+  if e.get('file'): url=f'{external_base()}/subtitle-files/{urllib.parse.quote(e["file"])}'
+  if url: out.append({'id':e.get('id') or f'pitorrent-{i}','lang':e.get('lang') or 'eng','url':url})
+ return jsonify({'subtitles':out})
+
+@app.get('/subtitle-api')
+def subtitle_get():
+ rel=clean_rel(request.args.get('file'))
+ if rel is None: return jsonify({'error':'invalid file'}),400
+ return jsonify({'file':rel,'subtitles':load_map().get(rel,[])})
+
+@app.post('/subtitle-api')
+def subtitle_add():
+ rel=clean_rel(request.form.get('file'))
+ if rel is None or not os.path.isfile(os.path.join(ROOT,rel)): return jsonify({'error':'video file not found'}),400
+ lang=(request.form.get('lang') or 'eng').strip() or 'eng'; url=(request.form.get('url') or '').strip(); upload=request.files.get('upload')
+ entry={'id':uuid.uuid4().hex[:12],'lang':lang}
+ if upload and upload.filename:
+  ext=os.path.splitext(upload.filename)[1].lower()
+  if ext not in SUB_EXT: return jsonify({'error':'subtitle must be .srt, .vtt, .ass or .ssa'}),400
+  stored=entry['id']+'-'+secure_filename(upload.filename); upload.save(os.path.join(SUB_FILES,stored)); entry['file']=stored; entry['name']=upload.filename
+ elif url:
+  if not re.match(r'^https?://',url,re.I): return jsonify({'error':'subtitle URL must start with http:// or https://'}),400
+  entry['url']=url; entry['name']=url.rsplit('/',1)[-1]
+ else: return jsonify({'error':'provide a subtitle URL or upload a file'}),400
+ data=load_map(); data.setdefault(rel,[]).append(entry); save_map(data)
+ return jsonify({'ok':True,'subtitle':entry})
+
+@app.delete('/subtitle-api')
+def subtitle_delete():
+ rel=clean_rel(request.args.get('file')); sid=request.args.get('id') or ''
+ if rel is None: return jsonify({'error':'invalid file'}),400
+ data=load_map(); old=data.get(rel,[]); keep=[]; removed=None
+ for e in old:
+  if e.get('id')==sid and removed is None: removed=e
+  else: keep.append(e)
+ if removed and removed.get('file'):
+  try: os.remove(os.path.join(SUB_FILES,removed['file']))
+  except OSError: pass
+ if keep: data[rel]=keep
+ else: data.pop(rel,None)
+ save_map(data); return jsonify({'ok':bool(removed)})
+
+@app.get('/subtitle-files/<path:name>')
+def subtitle_file(name): return send_from_directory(SUB_FILES,name,as_attachment=False)
 
 @app.get('/health')
-def health(): return jsonify({'ok':True,'files':len(video_files())})
+def health(): return jsonify({'ok':True,'files':len(video_files()),'subtitleMappings':len(load_map())})
 
 app.run(host='0.0.0.0',port=7000)
