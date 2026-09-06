@@ -19,14 +19,27 @@ services:
       - "51413:51413"
       - "51413:51413/udp"
 
+  addon:
+    build: ./addon
+    container_name: pitorrent-addon
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Bangkok
+    volumes:
+      - /mnt/pitorrent/downloads/complete:/downloads/complete:ro
+    expose:
+      - "7000"
+
   web:
     image: nginx:alpine
     container_name: pitorrent-web
     restart: unless-stopped
     depends_on:
       - transmission
+      - addon
     ports:
       - "8080:8080"
     volumes:
       - ./web:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /mnt/pitorrent/downloads/complete:/downloads/complete:ro
