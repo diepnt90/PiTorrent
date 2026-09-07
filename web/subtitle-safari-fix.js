@@ -1,29 +1,30 @@
 // Safari subtitle language compatibility for PiTorrent web player.
-// Stored subtitle language codes use ISO-639-2 (eng/vie/...), while HTML5
-// track.srclang is best represented with BCP-47/ISO-639-1 codes.
 const PLAYER_SUB_LANGS={
   eng:{code:'en',label:'English'},
   vie:{code:'vi',label:'Vietnamese'},
-  dual:{code:'mul',label:'Dual Language'},
-  jpn:{code:'ja',label:'Japanese'},
-  kor:{code:'ko',label:'Korean'},
-  chi:{code:'zh',label:'Chinese'},
-  zho:{code:'zh',label:'Chinese'},
-  und:{code:'und',label:'Other'}
+  dual:{code:'mul',label:'Dual Language'}
 };
 
-function ensureDualLanguageOption(){
+function limitSubtitleLanguageOptions(){
   const sel=document.getElementById('sub-lang');
-  if(!sel||sel.querySelector('option[value="dual"]')) return;
-  const opt=document.createElement('option');
-  opt.value='dual';
-  opt.textContent='Dual Language';
-  const other=sel.querySelector('option[value="und"]');
-  if(other) sel.insertBefore(opt,other); else sel.appendChild(opt);
+  if(!sel) return;
+  const current=sel.value;
+  sel.innerHTML='';
+  [
+    ['eng','English'],
+    ['vie','Vietnamese'],
+    ['dual','Dual Language']
+  ].forEach(([value,label])=>{
+    const opt=document.createElement('option');
+    opt.value=value;
+    opt.textContent=label;
+    sel.appendChild(opt);
+  });
+  if(['eng','vie','dual'].includes(current)) sel.value=current;
 }
 
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',ensureDualLanguageOption);
-else ensureDualLanguageOption();
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',limitSubtitleLanguageOptions);
+else limitSubtitleLanguageOptions();
 
 openPlayer=async function(path){
   const box=$('player-box'),v=$('player');
@@ -39,7 +40,7 @@ openPlayer=async function(path){
     const d=await r.json();
     const a=d.subtitles||[];
     a.forEach((s,i)=>{
-      const meta=PLAYER_SUB_LANGS[String(s.lang||'und').toLowerCase()]||{code:String(s.lang||'und').toLowerCase(),label:String(s.lang||'Subtitle').toUpperCase()};
+      const meta=PLAYER_SUB_LANGS[String(s.lang||'').toLowerCase()]||{code:'und',label:String(s.lang||'Subtitle').toUpperCase()};
       const tr=document.createElement('track');
       tr.kind='subtitles';
       tr.label=meta.label;
