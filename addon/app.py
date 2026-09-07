@@ -8,6 +8,7 @@ ROOT='/downloads/complete'
 SUB_ROOT='/data/subtitles'
 SUB_FILES=os.path.join(SUB_ROOT,'files')
 SUB_MAP=os.path.join(SUB_ROOT,'mappings.json')
+TRANSMISSION_RPC=os.environ.get('TRANSMISSION_RPC','http://transmission:9091/transmission/rpc')
 VIDEO_EXT={'.mp4','.mkv','.avi','.mov','.m4v','.webm','.ts','.m2ts','.wmv','.flv'}
 SUB_EXT={'.srt','.vtt','.ass','.ssa'}
 HASH_CHUNK=64*1024
@@ -15,13 +16,13 @@ MASK64=0xFFFFFFFFFFFFFFFF
 os.makedirs(SUB_FILES,exist_ok=True)
 
 MANIFEST={
- 'id':'community.pitorrent.lan','version':'0.2.1','name':'PiTorrent LAN',
+ 'id':'community.pitorrent.lan','version':'0.3.0','name':'PiTorrent LAN',
  'description':'Streams completed PiTorrent files and their subtitles from the local Raspberry Pi.',
  'resources':[
   {'name':'stream','types':['movie','series'],'idPrefixes':['tt']},
   {'name':'subtitles','types':['movie','series'],'idPrefixes':['tt']}
  ],
- 'types':['movie','series'],'catalogs':[],'behaviorHints':{'configurable':False}
+ 'types':['movie','series'],'catalogs':[],'behaviorHints':{'configurable':False,'p2p':True}
 }
 
 def norm(s):
@@ -72,6 +73,42 @@ def opensubtitles_hash(path,size=None):
    for i in range(0,usable,8): h=(h+struct.unpack_from('<Q',block,i)[0]) & MASK64
   return f'{h:016x}'
  except (OSError,ValueError,struct.error): return None
+
+def transmission_call(method,arguments=None):
+ headers={'Content-Type':'application/json'}
+ payload={'method':method,'arguments':arguments or {}}
+ try:
+  r=requests.post(TRANSMISSION_RPC,json=payload,headers=headers,timeout=5)
+  if r.status_code==409:
+   sid=r.headers.get('X-Transmission-Session-Id')
+   if not sid: return None
+   headers['X-Transmission-Session-Id']=sid
+   r=requests.post(TRANSMISSION_RPC,json=payload,headers=headers,timeout=5)
+  if not r.ok: return None
+  data=r.json()
+  if data.get('result')!='success': return None
+  return data.get('arguments') or {}
+ except Exception:
+  return None
+
+def torrent_source_for_file(path):
+ rel=os.path.relpath(path,ROOT).replace(os.sep,'/').lstrip('/')
+ data=transmission_call('torrent-get',{'fields':['id','hashString','name','downloadDir','files']})
+ if not data: return None
+ candidates=[]
+ for t in data.get('torrents') or []:
+  for idx,f in enumerate(t.get('files') or []):
+   fname=(f.get('name') or '').replace('\\','/').lstrip('/')
+   # Transmission file names are normally relative to downloadDir. Match exact
+   # PiTorrent relative path first, then allow a unique suffix match.
+   if fname==rel:
+    return t.get('hashString'),idx,fname
+   if rel.endswith('/'+fname) or fname.endswith('/'+rel):
+    candidates.append((t.get('hashString'),idx,fname))
+   elif os.path.basename(fname)==os.path.basename(rel):
+    candidates.append((t.get('hashString'),idx,fname))
+ if len(candidates)==1: return candidates[0]
+ return None
 
 def fetch_meta(kind,meta_id):
  try:
@@ -148,11 +185,18 @@ def stream(kind,content_id):
  if kind not in ('movie','series'): return jsonify({'streams':[]})
  found=choose_file(kind,content_id)
  if not found: return jsonify({'streams':[]})
- p,fn,size=found; rel=os.path.relpath(p,ROOT).replace(os.sep,'/')
- hints={'filename':subtitle_filename(kind,content_id,fn),'videoSize':size,'notWebReady':True}
- vhash=opensubtitles_hash(p,size)
- if vhash: hints['videoHash']=vhash
- return jsonify({'streams':[{'name':'PiTorrent LAN','description':f'Local • {fn}','url':f'{external_base()}/media/{urllib.parse.quote(rel)}','behaviorHints':hints}]})
+ p,fn,size=found
+ source=torrent_source_for_file(p)
+ if not source: return jsonify({'streams':[]})
+ info_hash,file_idx,torrent_filename=source
+ hints={'filename':subtitle_filename(kind,content_id,fn),'bingeGroup':f'pitorrent|{info_hash.lower()}'}
+ return jsonify({'streams':[{
+  'name':'PiTorrent LAN',
+  'description':f'Local completed • {fn}',
+  'infoHash':info_hash.lower(),
+  'fileIdx':file_idx,
+  'behaviorHints':hints
+ }]})
 
 @app.get('/subtitles/<kind>/<path:content_id>.json')
 def subtitles(kind,content_id):
