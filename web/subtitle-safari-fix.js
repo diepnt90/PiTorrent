@@ -4,12 +4,26 @@
 const PLAYER_SUB_LANGS={
   eng:{code:'en',label:'English'},
   vie:{code:'vi',label:'Vietnamese'},
+  dual:{code:'mul',label:'Dual Language'},
   jpn:{code:'ja',label:'Japanese'},
   kor:{code:'ko',label:'Korean'},
   chi:{code:'zh',label:'Chinese'},
   zho:{code:'zh',label:'Chinese'},
   und:{code:'und',label:'Other'}
 };
+
+function ensureDualLanguageOption(){
+  const sel=document.getElementById('sub-lang');
+  if(!sel||sel.querySelector('option[value="dual"]')) return;
+  const opt=document.createElement('option');
+  opt.value='dual';
+  opt.textContent='Dual Language';
+  const other=sel.querySelector('option[value="und"]');
+  if(other) sel.insertBefore(opt,other); else sel.appendChild(opt);
+}
+
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',ensureDualLanguageOption);
+else ensureDualLanguageOption();
 
 openPlayer=async function(path){
   const box=$('player-box'),v=$('player');
@@ -34,7 +48,7 @@ openPlayer=async function(path){
       if(i===0)tr.default=true;
       v.appendChild(tr);
     });
-    $('player-note').textContent=a.length?`${a.length} subtitle track(s) loaded. Choose English or Vietnamese from CC/Subtitles.`:'No subtitle attached to this file.';
+    $('player-note').textContent=a.length?`${a.length} subtitle track(s) loaded. Choose a subtitle from CC/Subtitles.`:'No subtitle attached to this file.';
   }catch(e){
     $('player-note').textContent='Could not load subtitle list.';
   }
