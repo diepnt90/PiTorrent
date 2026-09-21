@@ -1,4 +1,4 @@
-import os,re,urllib.parse,struct,json,uuid
+import os,re,urllib.parse,struct,json,uuid,ipaddress,socket
 from flask import Flask,jsonify,request,send_from_directory,Response
 from werkzeug.utils import secure_filename
 import requests
@@ -126,6 +126,52 @@ def external_base():
  proto=request.headers.get('X-Forwarded-Proto') or 'http'
  return f'{proto}://{host}'
 
+def redirect_target_url(value):
+ value=(value or '').strip()
+ if not value: return None
+ if not re.match(r'^https?://',value,re.I): value='https://'+value
+ try:
+  u=urllib.parse.urlsplit(value)
+ except ValueError: return None
+ if u.scheme not in ('http','https') or not u.hostname or u.username or u.password: return None
+ return value
+
+def public_http_url(url):
+ try:
+  u=urllib.parse.urlsplit(url)
+  host=u.hostname
+  if u.scheme not in ('http','https') or not host or u.username or u.password: return False
+  try:
+   ips={x[4][0] for x in socket.getaddrinfo(host,u.port or (443 if u.scheme=='https' else 80),type=socket.SOCK_STREAM)}
+  except socket.gaierror:
+   return False
+  for raw in ips:
+   ip=ipaddress.ip_address(raw.split('%',1)[0])
+   if not ip.is_global: return False
+  return True
+ except (ValueError,OSError):
+  return False
+
+def follow_redirects(url,max_redirects=10):
+ history=[]
+ current=url
+ headers={'User-Agent':'Mozilla/5.0 (PiTorrent Redirect Checker)'}
+ for _ in range(max_redirects+1):
+  if not public_http_url(current): raise ValueError('URL resolves to a non-public address')
+  r=requests.get(current,timeout=(5,10),headers=headers,allow_redirects=False,stream=True)
+  try:
+   status=r.status_code
+   if status in (301,302,303,307,308) and r.headers.get('Location'):
+    if len(history)>=max_redirects: raise ValueError('too many redirects')
+    nxt=urllib.parse.urljoin(current,r.headers['Location'])
+    history.append({'status':status,'url':current,'location':nxt})
+    current=nxt
+    continue
+   return current,status,history
+  finally:
+   r.close()
+ raise ValueError('too many redirects')
+
 def subtitle_to_vtt(text):
  text=(text or '').replace('\r\n','\n').replace('\r','\n').lstrip('\ufeff')
  if text.lstrip().startswith('WEBVTT'): return text
@@ -229,6 +275,21 @@ def player_subtitle():
   return Response(subtitle_to_vtt(text),mimetype='text/vtt; charset=utf-8')
  except Exception as e:
   return jsonify({'error':f'could not load subtitle: {e}'}),502
+
+@app.post('/check-redirect')
+def check_redirect():
+ data=request.get_json(silent=True) or {}
+ value=(data.get('domain') or data.get('url') or request.form.get('domain') or request.form.get('url') or '').strip()
+ target=redirect_target_url(value)
+ if not target: return jsonify({'error':'provide a valid http/https domain or URL'}),400
+ try:
+  final_url,status,history=follow_redirects(target)
+  host=urllib.parse.urlsplit(final_url).hostname or ''
+  return jsonify({'input':value,'final_url':final_url,'final_domain':host,'status':status,'redirects':len(history),'history':history})
+ except requests.RequestException as e:
+  return jsonify({'error':f'request failed: {e}'}),502
+ except ValueError as e:
+  return jsonify({'error':str(e)}),400
 
 @app.get('/health')
 def health(): return jsonify({'ok':True,'files':len(video_files()),'subtitleMappings':len(load_map())})
