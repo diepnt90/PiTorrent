@@ -58,5 +58,5 @@ services:
           wget --spider -S -T 60 "https://allinone.diep90-nt.workers.dev/football.m3u" 2>&1 || true
           date '+%Y-%m-%d %H:%M:%S tvchannel.m3u'
           wget --spider -S -T 60 "https://allinone.diep90-nt.workers.dev/tvchannel.m3u" 2>&1 || true
-          sleep 2
+          sleep 120
         done
