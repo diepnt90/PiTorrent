@@ -54,7 +54,9 @@ services:
       - -c
       - |
         while true; do
-          wget -q -T 15 -O /dev/null "https://allinone.diep90-nt.workers.dev/football.m3u" || true
-          wget -q -T 15 -O /dev/null "https://allinone.diep90-nt.workers.dev/tvchannel.m3u" || true
-          sleep 60
+          date '+%Y-%m-%d %H:%M:%S football.m3u'
+          wget --spider -S -T 60 "https://allinone.diep90-nt.workers.dev/football.m3u" 2>&1 || true
+          date '+%Y-%m-%d %H:%M:%S tvchannel.m3u'
+          wget --spider -S -T 60 "https://allinone.diep90-nt.workers.dev/tvchannel.m3u" 2>&1 || true
+          sleep 2
         done
