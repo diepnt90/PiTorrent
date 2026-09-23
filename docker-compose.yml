@@ -19,9 +19,9 @@ services:
       - "51413:51413"
       - "51413:51413/udp"
 
-  addon:
-    build: ./addon
-    container_name: pitorrent-addon
+  api:
+    build: ./api
+    container_name: pitorrent-api
     restart: unless-stopped
     environment:
       - TZ=Asia/Bangkok
@@ -31,13 +31,22 @@ services:
     expose:
       - "7000"
 
+  smb:
+    build: ./smb
+    container_name: pitorrent-smb
+    restart: unless-stopped
+    ports:
+      - "445:445"
+    volumes:
+      - /mnt/pitorrent/downloads/complete:/share:ro
+
   web:
     image: nginx:alpine
     container_name: pitorrent-web
     restart: unless-stopped
     depends_on:
       - transmission
-      - addon
+      - api
     ports:
       - "8080:8080"
     volumes:
