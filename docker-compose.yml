@@ -28,6 +28,7 @@ services:
     volumes:
       - /mnt/pitorrent/downloads/complete:/downloads/complete:ro
       - /mnt/pitorrent/data/subtitles:/data/subtitles
+      - /mnt/pitorrent/data/custom-names:/data/custom-names
     expose:
       - "7000"
 
@@ -39,6 +40,7 @@ services:
       - transmission
       - api
     ports:
+      - "80:8080"
       - "8080:8080"
     volumes:
       - ./web:/usr/share/nginx/html:ro
