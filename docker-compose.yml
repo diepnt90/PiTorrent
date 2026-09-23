@@ -35,11 +35,7 @@ services:
     build: ./smb
     container_name: pitorrent-smb
     restart: unless-stopped
-    ports:
-      - "137:137/udp"
-      - "138:138/udp"
-      - "139:139"
-      - "445:445"
+    network_mode: host
     volumes:
       - /mnt/pitorrent/downloads/complete:/share:ro
 
