@@ -31,14 +31,6 @@ services:
     expose:
       - "7000"
 
-  ftp:
-    build: ./ftp
-    container_name: pitorrent-ftp
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - /mnt/pitorrent/downloads/complete:/source:ro
-
   web:
     image: nginx:alpine
     container_name: pitorrent-web
