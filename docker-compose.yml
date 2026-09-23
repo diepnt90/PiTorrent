@@ -37,7 +37,7 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - /mnt/pitorrent/downloads/complete:/share:ro
+      - /mnt/pitorrent/downloads/complete:/source:ro
 
   web:
     image: nginx:alpine
