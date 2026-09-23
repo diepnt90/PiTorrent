@@ -116,9 +116,17 @@ def cors(resp):
 
 @app.get('/custom-name-api')
 def custom_name_get():
- rel=clean_rel(request.args.get('file'))
+ raw=request.args.get('file')
+ mapping=load_custom_map()
+ if raw is None:
+  out={}
+  for rel,name in mapping.items():
+   public_name=custom_public_name(rel,name)
+   out[rel]={'custom_name':name,'public_name':public_name,'public_url':f'{external_base()}/{urllib.parse.quote(public_name)}'}
+  return jsonify({'mappings':out})
+ rel=clean_rel(raw)
  if rel is None: return jsonify({'error':'invalid file'}),400
- name=load_custom_map().get(rel,'')
+ name=mapping.get(rel,'')
  public_name=custom_public_name(rel,name) if name else ''
  return jsonify({'file':rel,'custom_name':name,'public_name':public_name,'public_url':f'{external_base()}/{urllib.parse.quote(public_name)}' if public_name else ''})
 
