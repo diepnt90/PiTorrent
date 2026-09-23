@@ -1,6 +1,6 @@
 # PiTorrent
 
-PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi, built around Transmission and Docker. Downloads are stored on external storage, while a simple web dashboard provides torrent management, per-file selection, completed-file management, subtitle attachment, browser playback, and FTP access for completed files.
+PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi, built around Transmission and Docker. Downloads are stored on external storage, while a simple web dashboard provides torrent management, per-file selection, completed-file management, subtitle attachment, and browser playback.
 
 ## Features
 
@@ -14,9 +14,8 @@ PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi
 - `Add sub` button for each completed video
 - Attach subtitles by direct URL or local upload
 - Persistent subtitle mappings
-- Read-only anonymous FTP access for completed files
 - No Stremio/Nuvio addon
-- No SMB service
+- No SMB or FTP service
 
 ## Architecture
 
@@ -35,14 +34,6 @@ Browser
    |          +--> Transmission RPC
    |
    +--> completed media from USB
-
-LAN devices / VLC
-   |
-   | ftp://PI-IP/
-   v
- FTP (anonymous, read-only)
-   |
-   +--> /mnt/pitorrent/downloads/complete
 
 External storage
 /mnt/pitorrent/
@@ -89,58 +80,13 @@ Open the dashboard:
 http://<PI-IP>:8080/
 ```
 
-## FTP access
-
-Completed files are shared over anonymous FTP:
-
-```text
-ftp://<PI-IP>/
-```
-
-Example:
-
-```text
-ftp://192.168.1.50/
-```
-
-The FTP service is:
-
-- anonymous login
-- no password required
-- read-only
-- TCP port `21`
-- passive ports `21100-21110`
-
-### VLC / Android TV
-
-In VLC, open the network/local-network section and add or open:
-
-```text
-ftp://<PI-IP>/
-```
-
-If VLC asks for credentials:
-
-```text
-Username: anonymous
-Password: leave blank
-```
-
-### Desktop test
-
-You can test the FTP service from another machine with:
-
-```bash
-curl ftp://<PI-IP>/
-```
-
 ## Downloading a torrent
 
 1. Paste a magnet link or `.torrent` URL into the PiTorrent dashboard.
 2. PiTorrent retrieves torrent metadata.
 3. Select the files you want.
 4. Start the download.
-5. Completed files appear in the dashboard and via FTP.
+5. Completed files appear in the dashboard.
 
 ## Adding subtitles
 
@@ -184,12 +130,6 @@ Check containers:
 docker compose ps
 ```
 
-FTP logs:
-
-```bash
-docker compose logs -f ftp
-```
-
 API logs:
 
 ```bash
@@ -202,10 +142,10 @@ Transmission logs:
 docker compose logs -f transmission
 ```
 
-Check FTP port:
+Web logs:
 
 ```bash
-ss -lnt | grep ':21'
+docker compose logs -f web
 ```
 
 ## Ports
@@ -213,8 +153,6 @@ ss -lnt | grep ':21'
 | Port | Protocol | Purpose |
 |---|---|---|
 | `8080` | TCP | PiTorrent dashboard and browser media access |
-| `21` | TCP | FTP control connection |
-| `21100-21110` | TCP | FTP passive data connections |
 | `51413` | TCP/UDP | Transmission peer traffic |
 
 Transmission RPC (`9091`) and the internal API (`7000`) are only exposed inside Docker.
@@ -225,4 +163,4 @@ Removing or rebuilding containers does not remove persistent PiTorrent data unde
 
 ## Security
 
-The FTP service is intended only for a trusted LAN. Anonymous users can read completed files without a password, but cannot upload, modify, or delete files. Do not expose ports `21`, `21100-21110`, or `8080` directly to the public Internet.
+The default configuration is intended for a trusted LAN. Do not expose port `8080` directly to the public Internet without authentication and HTTPS.
