@@ -1,8 +1,6 @@
 # PiTorrent
 
-PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi, built around Transmission and Docker. Downloads are stored on an external USB drive, while a simple web dashboard provides torrent management, per-file selection, completed-file management, and subtitle attachment.
-
-PiTorrent also includes a local Stremio/Nuvio-compatible addon that exposes completed video files on the LAN and can provide subtitles attached to each downloaded file.
+PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi, built around Transmission and Docker. Downloads are stored on external storage, while a simple web dashboard provides torrent management, per-file selection, completed-file management, subtitle attachment, browser playback, and SMB access for completed files.
 
 ## Features
 
@@ -12,16 +10,12 @@ PiTorrent also includes a local Stremio/Nuvio-compatible addon that exposes comp
 - Select individual files from multi-file torrents
 - Pause, resume, remove, or remove torrent + files
 - Download/upload speed, peer count, progress, and USB free-space display
-- Completed-file list
-- External USB storage for downloads and persistent data
-- Transmission resume state survives container/Pi restarts
-- Local Stremio/Nuvio stream-provider addon
-- Automatic matching of completed movies/episodes to Stremio/Nuvio requests
+- Completed-file list and browser playback
 - `Add sub` button for each completed video
-- Attach subtitles using a direct URL or upload a local subtitle file
-- Multiple subtitle languages/files can be attached to one video
-- Supported uploaded subtitle formats: `.srt`, `.vtt`, `.ass`, `.ssa`
-- Subtitle mappings are persistent and do not require a media database
+- Attach subtitles by direct URL or local upload
+- Persistent subtitle mappings
+- Read-only SMB2/SMB3 share for completed files
+- No Stremio/Nuvio addon
 
 ## Architecture
 
@@ -31,17 +25,25 @@ Browser
    | http://PI-IP:8080
    v
  nginx / PiTorrent Web UI
-   |          |             |
-   |          |             +--> PiTorrent addon (Flask)
-   |          |                    |- Stremio/Nuvio streams
-   |          |                    |- subtitles
-   |          |                    `- subtitle management API
+   |          |
+   |          +--> Internal API
+   |          |      |- subtitle management
+   |          |      |- browser subtitle conversion
+   |          |      `- redirect checker
    |          |
    |          +--> Transmission RPC
    |
    +--> completed media from USB
 
-External USB
+LAN devices
+   |
+   | smb://PI-IP/PiTorrent
+   v
+ Samba (read-only)
+   |
+   +--> /mnt/pitorrent/downloads/complete
+
+External storage
 /mnt/pitorrent/
 |- downloads/
 |  |- complete/
@@ -69,7 +71,7 @@ id
 
 If it is not UID/GID 1000, update `PUID` and `PGID` in `docker-compose.yml`.
 
-## USB storage
+## Storage
 
 PiTorrent expects the external drive at:
 
@@ -77,20 +79,18 @@ PiTorrent expects the external drive at:
 /mnt/pitorrent
 ```
 
-Verify that it is really mounted before starting Docker:
+Verify that it is mounted before starting Docker:
 
 ```bash
 mountpoint /mnt/pitorrent
 findmnt /mnt/pitorrent
 ```
 
-Recommended persistent mount example for an ext4 drive in `/etc/fstab`:
+Recommended persistent mount example for ext4:
 
 ```text
 UUID=<YOUR-USB-UUID> /mnt/pitorrent ext4 defaults,nofail,x-systemd.device-timeout=10 0 2
 ```
-
-Using `nofail` prevents a missing USB drive from blocking the Raspberry Pi boot process.
 
 ## Installation
 
@@ -117,10 +117,54 @@ Open the dashboard:
 http://<PI-IP>:8080/
 ```
 
-For example, if the Pi is `192.168.1.50`:
+## SMB access
+
+Completed files are shared over SMB as:
 
 ```text
-http://192.168.1.50:8080/
+smb://<PI-IP>/PiTorrent
+```
+
+Examples:
+
+```text
+smb://192.168.1.50/PiTorrent
+\\192.168.1.50\PiTorrent
+```
+
+The default SMB share is:
+
+- guest access enabled
+- read-only
+- SMB2 minimum
+- SMB3 maximum
+- TCP port `445`
+
+This is intended for a trusted home LAN. Devices can browse and play completed files but cannot modify or delete them over SMB.
+
+### Android / Android TV
+
+In a file manager or media player that supports SMB:
+
+1. Add a new SMB/network location.
+2. Host: Raspberry Pi IP, for example `192.168.1.50`.
+3. Share name: `PiTorrent`.
+4. Use guest/anonymous access.
+
+### Windows
+
+Open File Explorer and enter:
+
+```text
+\\<PI-IP>\PiTorrent
+```
+
+### Linux
+
+For desktop file managers:
+
+```text
+smb://<PI-IP>/PiTorrent
 ```
 
 ## Downloading a torrent
@@ -130,29 +174,13 @@ http://192.168.1.50:8080/
 3. When metadata is ready, the torrent is stopped and the file picker is displayed.
 4. Select the files you want to download.
 5. Click **Start download**.
-6. Completed selected files appear under **Completed files**.
-
-Only wanted files that have fully completed are shown in the completed-file list.
+6. Completed selected files appear under **Completed files** and in the SMB share.
 
 ## Adding subtitles
 
 Each completed video has an **Add sub** button.
 
-A subtitle can be attached in two ways:
-
-### Direct subtitle URL
-
-Choose a language and paste a direct HTTP/HTTPS subtitle URL, for example:
-
-```text
-https://example.com/movie.en.srt
-```
-
-PiTorrent stores the URL in its subtitle mapping. The subtitle itself remains hosted by the external provider.
-
-### Upload a subtitle
-
-You can instead upload a subtitle file from your computer. Supported formats are:
+A subtitle can be attached using a direct HTTP/HTTPS subtitle URL or by uploading:
 
 ```text
 .srt
@@ -167,71 +195,18 @@ Uploaded subtitle files are stored under:
 /mnt/pitorrent/data/subtitles/files/
 ```
 
-The video-to-subtitle mapping is stored in:
+Mappings are stored in:
 
 ```text
 /mnt/pitorrent/data/subtitles/mappings.json
 ```
 
-The mapping is based on the completed video's relative path. You do not need to manually enter an IMDb ID, season, or episode number when adding a subtitle.
-
-## Stremio / Nuvio addon
-
-PiTorrent exposes a local stream-provider addon at:
-
-```text
-http://<PI-IP>:8080/manifest.json
-```
-
-Example:
-
-```text
-http://192.168.1.50:8080/manifest.json
-```
-
-The addon currently supports:
-
-- `movie`
-- `series`
-- IMDb-style IDs (`tt...`)
-- completed local video streams
-- subtitles attached through the PiTorrent dashboard
-
-The addon does not maintain a separate media library database. When Stremio/Nuvio requests a movie or episode, PiTorrent scans completed video files and chooses the best matching local file using Cinemeta metadata, titles, episode titles, and season/episode information.
-
-The same matching process is used for subtitles. Once the requested media is matched to a local video, PiTorrent returns the subtitles attached to that video.
-
-### Addon endpoints
-
-```text
-GET /manifest.json
-GET /stream/<type>/<id>.json
-GET /subtitles/<type>/<id>.json
-```
-
-For example:
-
-```text
-/stream/series/tt0086661:7:6.json
-/subtitles/series/tt0086661:7:6.json
-```
-
-Uploaded subtitle files are served through `/subtitle-files/`.
-
 ## Updating PiTorrent
-
-Because the addon is built locally, use `--build` when updating:
 
 ```bash
 cd ~/PiTorrent
 git pull
 docker compose up -d --build
-```
-
-If nginx configuration was changed, recreating the stack with the command above is normally sufficient. To explicitly restart the web proxy:
-
-```bash
-docker compose restart web
 ```
 
 ## Useful commands
@@ -248,44 +223,49 @@ View logs:
 docker compose logs -f
 ```
 
-Addon logs only:
+SMB logs:
 
 ```bash
-docker compose logs -f addon
+docker compose logs -f smb
 ```
 
-Transmission logs only:
+API logs:
+
+```bash
+docker compose logs -f api
+```
+
+Transmission logs:
 
 ```bash
 docker compose logs -f transmission
 ```
 
-Check the addon:
+Check the internal API:
 
 ```bash
-curl http://127.0.0.1:8080/manifest.json
-curl http://127.0.0.1:8080/addon-health
+curl http://127.0.0.1:8080/api-health
 ```
 
-Check USB storage:
+Check SMB port:
 
 ```bash
-findmnt /mnt/pitorrent
-df -hT /mnt/pitorrent
+ss -lnt | grep ':445'
 ```
 
 ## Ports
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| `8080` | TCP | PiTorrent dashboard, addon API, media and subtitle access |
+| `8080` | TCP | PiTorrent dashboard and browser media access |
+| `445` | TCP | SMB2/SMB3 read-only completed-file share |
 | `51413` | TCP/UDP | Transmission peer traffic |
 
-Transmission RPC (`9091`) and the addon service (`7000`) are internal Docker services and are not exposed directly on the host. nginx provides the public routes required by the dashboard and addon.
+Transmission RPC (`9091`) and the internal API (`7000`) are only exposed inside Docker.
 
 ## Data persistence
 
-Removing or rebuilding the Docker containers does not remove the persistent PiTorrent data stored under `/mnt/pitorrent`.
+Removing or rebuilding containers does not remove persistent PiTorrent data under `/mnt/pitorrent`.
 
 Important paths:
 
@@ -297,18 +277,6 @@ Important paths:
 /mnt/pitorrent/data/subtitles
 ```
 
-Do not delete `/mnt/pitorrent/data/transmission` if you want Transmission configuration and resume information to survive container recreation.
-
-## LAN usage
-
-The PiTorrent addon is designed primarily for devices on the same local network as the Raspberry Pi. A URL such as:
-
-```text
-http://192.168.1.50:8080/manifest.json
-```
-
-will only work for a Nuvio/Stremio client that can reach that Raspberry Pi address.
-
 ## Security
 
-The default configuration is intended for a trusted home LAN. Do not expose port `8080` directly to the public Internet without adding appropriate authentication, HTTPS, and access controls.
+The default configuration is intended for a trusted LAN. The SMB share allows anonymous read-only access to completed files. Do not expose ports `445` or `8080` directly to the public Internet.
