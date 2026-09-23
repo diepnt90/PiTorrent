@@ -9,7 +9,10 @@ SUB_ROOT='/data/subtitles'
 SUB_FILES=os.path.join(SUB_ROOT,'files')
 SUB_MAP=os.path.join(SUB_ROOT,'mappings.json')
 SUB_EXT={'.srt','.vtt','.ass','.ssa'}
+CUSTOM_ROOT='/data/custom-names'
+CUSTOM_MAP=os.path.join(CUSTOM_ROOT,'mappings.json')
 os.makedirs(SUB_FILES,exist_ok=True)
+os.makedirs(CUSTOM_ROOT,exist_ok=True)
 
 def clean_rel(rel):
  rel=urllib.parse.unquote(rel or '').replace('\\','/').lstrip('/')
@@ -28,6 +31,28 @@ def save_map(data):
  tmp=SUB_MAP+'.tmp'
  with open(tmp,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2)
  os.replace(tmp,SUB_MAP)
+
+def load_custom_map():
+ try:
+  with open(CUSTOM_MAP,'r',encoding='utf-8') as f: return json.load(f)
+ except Exception: return {}
+
+def save_custom_map(data):
+ os.makedirs(CUSTOM_ROOT,exist_ok=True)
+ tmp=CUSTOM_MAP+'.tmp'
+ with open(tmp,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2)
+ os.replace(tmp,CUSTOM_MAP)
+
+def custom_public_name(rel,custom_name):
+ ext=os.path.splitext(rel)[1]
+ name=(custom_name or '').strip()
+ if ext and name.lower().endswith(ext.lower()): name=name[:-len(ext)]
+ return name+ext
+
+def external_base():
+ host=request.headers.get('X-Forwarded-Host') or request.headers.get('Host')
+ proto=request.headers.get('X-Forwarded-Proto') or 'http'
+ return f'{proto}://{host}'
 
 def video_count():
  exts={'.mp4','.mkv','.avi','.mov','.m4v','.webm','.ts','.m2ts','.wmv','.flv'}
@@ -87,6 +112,50 @@ def cors(resp):
  resp.headers['Access-Control-Allow-Headers']='*'
  resp.headers['Access-Control-Allow-Methods']='GET,HEAD,OPTIONS,POST,DELETE'
  resp.headers['Cache-Control']='no-store'
+ return resp
+
+@app.get('/custom-name-api')
+def custom_name_get():
+ rel=clean_rel(request.args.get('file'))
+ if rel is None: return jsonify({'error':'invalid file'}),400
+ name=load_custom_map().get(rel,'')
+ public_name=custom_public_name(rel,name) if name else ''
+ return jsonify({'file':rel,'custom_name':name,'public_name':public_name,'public_url':f'{external_base()}/{urllib.parse.quote(public_name)}' if public_name else ''})
+
+@app.post('/custom-name-api')
+def custom_name_set():
+ data=request.get_json(silent=True) or request.form
+ rel=clean_rel(data.get('file'))
+ if rel is None or not os.path.isfile(os.path.join(ROOT,rel)): return jsonify({'error':'video file not found'}),400
+ name=(data.get('name') or '').strip()
+ mapping=load_custom_map()
+ if not name:
+  mapping.pop(rel,None); save_custom_map(mapping)
+  return jsonify({'ok':True,'file':rel,'custom_name':'','public_name':'','public_url':''})
+ if '/' in name or '\\' in name or name in ('.','..'): return jsonify({'error':'custom name cannot contain / or \\'}),400
+ if len(name)>180: return jsonify({'error':'custom name is too long'}),400
+ ext=os.path.splitext(rel)[1]
+ if ext and name.lower().endswith(ext.lower()): name=name[:-len(ext)].strip()
+ if not name: return jsonify({'error':'custom name is required'}),400
+ public_name=custom_public_name(rel,name)
+ for other_rel,other_name in mapping.items():
+  if other_rel!=rel and custom_public_name(other_rel,other_name).lower()==public_name.lower():
+   return jsonify({'error':'custom URL already used by another file'}),409
+ mapping[rel]=name; save_custom_map(mapping)
+ return jsonify({'ok':True,'file':rel,'custom_name':name,'public_name':public_name,'public_url':f'{external_base()}/{urllib.parse.quote(public_name)}'})
+
+@app.get('/custom-media/<path:public_name>')
+def custom_media(public_name):
+ mapping=load_custom_map()
+ match=None
+ for rel,name in mapping.items():
+  if custom_public_name(rel,name).lower()==public_name.lower():
+   match=rel; break
+ if not match: return jsonify({'error':'custom media not found'}),404
+ path=os.path.join(ROOT,match)
+ if not os.path.isfile(path): return jsonify({'error':'video file not found'}),404
+ resp=Response(status=200)
+ resp.headers['X-Accel-Redirect']='/custom-media-internal/'+urllib.parse.quote(match)
  return resp
 
 @app.get('/subtitle-api')
@@ -167,6 +236,6 @@ def check_redirect():
  except ValueError as e: return jsonify({'error':str(e)}),400
 
 @app.get('/health')
-def health(): return jsonify({'ok':True,'files':video_count(),'subtitleMappings':len(load_map())})
+def health(): return jsonify({'ok':True,'files':video_count(),'subtitleMappings':len(load_map()),'customNames':len(load_custom_map())})
 
 app.run(host='0.0.0.0',port=7000)
