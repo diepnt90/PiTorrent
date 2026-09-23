@@ -1,6 +1,6 @@
 # PiTorrent
 
-PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi, built around Transmission and Docker. Downloads are stored on external storage, while a simple web dashboard provides torrent management, per-file selection, completed-file management, subtitle attachment, browser playback, and SMB access for completed files.
+PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi, built around Transmission and Docker. Downloads are stored on external storage, while a simple web dashboard provides torrent management, per-file selection, completed-file management, subtitle attachment, browser playback, and FTP access for completed files.
 
 ## Features
 
@@ -14,8 +14,9 @@ PiTorrent is a lightweight self-hosted torrent download manager for Raspberry Pi
 - `Add sub` button for each completed video
 - Attach subtitles by direct URL or local upload
 - Persistent subtitle mappings
-- Read-only SMB2/SMB3 share for completed files
+- Read-only anonymous FTP access for completed files
 - No Stremio/Nuvio addon
+- No SMB service
 
 ## Architecture
 
@@ -35,11 +36,11 @@ Browser
    |
    +--> completed media from USB
 
-LAN devices
+LAN devices / VLC
    |
-   | smb://PI-IP/PiTorrent
+   | ftp://PI-IP/
    v
- Samba (read-only)
+ FTP (anonymous, read-only)
    |
    +--> /mnt/pitorrent/downloads/complete
 
@@ -62,35 +63,6 @@ External storage
 - Docker and Docker Compose
 - External storage mounted at `/mnt/pitorrent`
 - UID/GID `1000:1000` by default
-
-Check your user ID with:
-
-```bash
-id
-```
-
-If it is not UID/GID 1000, update `PUID` and `PGID` in `docker-compose.yml`.
-
-## Storage
-
-PiTorrent expects the external drive at:
-
-```text
-/mnt/pitorrent
-```
-
-Verify that it is mounted before starting Docker:
-
-```bash
-mountpoint /mnt/pitorrent
-findmnt /mnt/pitorrent
-```
-
-Recommended persistent mount example for ext4:
-
-```text
-UUID=<YOUR-USB-UUID> /mnt/pitorrent ext4 defaults,nofail,x-systemd.device-timeout=10 0 2
-```
 
 ## Installation
 
@@ -117,70 +89,64 @@ Open the dashboard:
 http://<PI-IP>:8080/
 ```
 
-## SMB access
+## FTP access
 
-Completed files are shared over SMB as:
-
-```text
-smb://<PI-IP>/PiTorrent
-```
-
-Examples:
+Completed files are shared over anonymous FTP:
 
 ```text
-smb://192.168.1.50/PiTorrent
-\\192.168.1.50\PiTorrent
+ftp://<PI-IP>/
 ```
 
-The default SMB share is:
+Example:
 
-- guest access enabled
+```text
+ftp://192.168.1.50/
+```
+
+The FTP service is:
+
+- anonymous login
+- no password required
 - read-only
-- SMB2 minimum
-- SMB3 maximum
-- TCP port `445`
+- TCP port `21`
+- passive ports `21100-21110`
 
-This is intended for a trusted home LAN. Devices can browse and play completed files but cannot modify or delete them over SMB.
+### VLC / Android TV
 
-### Android / Android TV
-
-In a file manager or media player that supports SMB:
-
-1. Add a new SMB/network location.
-2. Host: Raspberry Pi IP, for example `192.168.1.50`.
-3. Share name: `PiTorrent`.
-4. Use guest/anonymous access.
-
-### Windows
-
-Open File Explorer and enter:
+In VLC, open the network/local-network section and add or open:
 
 ```text
-\\<PI-IP>\PiTorrent
+ftp://<PI-IP>/
 ```
 
-### Linux
-
-For desktop file managers:
+If VLC asks for credentials:
 
 ```text
-smb://<PI-IP>/PiTorrent
+Username: anonymous
+Password: leave blank
+```
+
+### Desktop test
+
+You can test the FTP service from another machine with:
+
+```bash
+curl ftp://<PI-IP>/
 ```
 
 ## Downloading a torrent
 
 1. Paste a magnet link or `.torrent` URL into the PiTorrent dashboard.
-2. PiTorrent starts the torrent temporarily so Transmission can retrieve magnet metadata.
-3. When metadata is ready, the torrent is stopped and the file picker is displayed.
-4. Select the files you want to download.
-5. Click **Start download**.
-6. Completed selected files appear under **Completed files** and in the SMB share.
+2. PiTorrent retrieves torrent metadata.
+3. Select the files you want.
+4. Start the download.
+5. Completed files appear in the dashboard and via FTP.
 
 ## Adding subtitles
 
 Each completed video has an **Add sub** button.
 
-A subtitle can be attached using a direct HTTP/HTTPS subtitle URL or by uploading:
+Supported uploaded subtitle formats:
 
 ```text
 .srt
@@ -206,6 +172,7 @@ Mappings are stored in:
 ```bash
 cd ~/PiTorrent
 git pull
+docker compose down
 docker compose up -d --build
 ```
 
@@ -217,16 +184,10 @@ Check containers:
 docker compose ps
 ```
 
-View logs:
+FTP logs:
 
 ```bash
-docker compose logs -f
-```
-
-SMB logs:
-
-```bash
-docker compose logs -f smb
+docker compose logs -f ftp
 ```
 
 API logs:
@@ -241,16 +202,10 @@ Transmission logs:
 docker compose logs -f transmission
 ```
 
-Check the internal API:
+Check FTP port:
 
 ```bash
-curl http://127.0.0.1:8080/api-health
-```
-
-Check SMB port:
-
-```bash
-ss -lnt | grep ':445'
+ss -lnt | grep ':21'
 ```
 
 ## Ports
@@ -258,7 +213,8 @@ ss -lnt | grep ':445'
 | Port | Protocol | Purpose |
 |---|---|---|
 | `8080` | TCP | PiTorrent dashboard and browser media access |
-| `445` | TCP | SMB2/SMB3 read-only completed-file share |
+| `21` | TCP | FTP control connection |
+| `21100-21110` | TCP | FTP passive data connections |
 | `51413` | TCP/UDP | Transmission peer traffic |
 
 Transmission RPC (`9091`) and the internal API (`7000`) are only exposed inside Docker.
@@ -267,16 +223,6 @@ Transmission RPC (`9091`) and the internal API (`7000`) are only exposed inside 
 
 Removing or rebuilding containers does not remove persistent PiTorrent data under `/mnt/pitorrent`.
 
-Important paths:
-
-```text
-/mnt/pitorrent/downloads/complete
-/mnt/pitorrent/downloads/incomplete
-/mnt/pitorrent/data/transmission
-/mnt/pitorrent/data/watch
-/mnt/pitorrent/data/subtitles
-```
-
 ## Security
 
-The default configuration is intended for a trusted LAN. The SMB share allows anonymous read-only access to completed files. Do not expose ports `445` or `8080` directly to the public Internet.
+The FTP service is intended only for a trusted LAN. Anonymous users can read completed files without a password, but cannot upload, modify, or delete files. Do not expose ports `21`, `21100-21110`, or `8080` directly to the public Internet.
