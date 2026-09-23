@@ -31,11 +31,13 @@ services:
     expose:
       - "7000"
 
-  smb:
-    build: ./smb
-    container_name: pitorrent-smb
+  ftp:
+    build: ./ftp
+    container_name: pitorrent-ftp
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
     volumes:
       - /mnt/pitorrent/downloads/complete:/share:ro
 
