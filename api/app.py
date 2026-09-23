@@ -1,4 +1,4 @@
-import os,re,urllib.parse,json,uuid,ipaddress,socket
+import os,re,urllib.parse,json,uuid,ipaddress,socket,mimetypes
 from flask import Flask,jsonify,request,send_from_directory,Response
 from werkzeug.utils import secure_filename
 import requests
@@ -164,6 +164,10 @@ def custom_media(public_name):
  if not os.path.isfile(path): return jsonify({'error':'video file not found'}),404
  resp=Response(status=200)
  resp.headers['X-Accel-Redirect']='/custom-media-internal/'+urllib.parse.quote(match)
+ mime=mimetypes.guess_type(path)[0] or 'application/octet-stream'
+ resp.headers['Content-Type']=mime
+ resp.headers['Content-Disposition']=f'inline; filename="{os.path.basename(path)}"'
+ resp.headers['Accept-Ranges']='bytes'
  return resp
 
 @app.get('/subtitle-api')
